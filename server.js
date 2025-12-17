@@ -39,6 +39,9 @@ async function fetchHyperliquid(asset) {
 }
 
 // Lighter - REST API (using correct parameter: market_index)
+// Read-only auth token (expires 2026)
+const LIGHTER_AUTH_TOKEN = 'ro:113070:single:1791877505:90a116e6a7209c7c8087b0c77ce55c6a6325466c9f7c87c77d20c764de3b38cf';
+
 async function fetchLighter(asset) {
     const marketIndex = assetMapping[asset].lighter;
     
@@ -55,7 +58,8 @@ async function fetchLighter(asset) {
             const response = await fetch(url, {
                 headers: {
                     'Accept': 'application/json',
-                    'User-Agent': 'OrderbookAnalyzer/1.0'
+                    'User-Agent': 'OrderbookAnalyzer/1.0',
+                    'Authorization': LIGHTER_AUTH_TOKEN
                 }
             });
             
