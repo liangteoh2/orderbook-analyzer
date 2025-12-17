@@ -112,15 +112,37 @@ function fetchLighterFromCache(asset) {
     return { bids: [], asks: [] };
 }
 
+// UPDATED: Aster API URL (changed from perp-api.aster.finance to fapi.asterdex.com)
 async function fetchAster(asset) {
     const symbol = assetMapping[asset].aster;
-    const response = await fetch(`https://perp-api.aster.finance/api/depth?symbol=${symbol}&limit=100`);
-    const data = await response.json();
-    if (!data.bids || !data.asks) throw new Error('Invalid Aster response');
-    return {
-        bids: data.bids.map(l => ({ price: parseFloat(l[0]), size: parseFloat(l[1]) })),
-        asks: data.asks.map(l => ({ price: parseFloat(l[0]), size: parseFloat(l[1]) }))
-    };
+    // Try the new API endpoint first
+    const urls = [
+        `https://fapi.asterdex.com/fapi/v1/depth?symbol=${symbol}&limit=100`,
+        `https://fapi.asterdex.com/fapi/v3/depth?symbol=${symbol}&limit=100`
+    ];
+    
+    let lastError = null;
+    for (const url of urls) {
+        try {
+            const response = await fetch(url, {
+                headers: {
+                    'User-Agent': 'OrderbookAnalyzer/1.0',
+                    'Accept': 'application/json'
+                }
+            });
+            if (!response.ok) continue;
+            const data = await response.json();
+            if (data.bids && data.asks) {
+                return {
+                    bids: data.bids.map(l => ({ price: parseFloat(l[0]), size: parseFloat(l[1]) })),
+                    asks: data.asks.map(l => ({ price: parseFloat(l[0]), size: parseFloat(l[1]) }))
+                };
+            }
+        } catch (e) {
+            lastError = e;
+        }
+    }
+    throw new Error(lastError?.message || 'Aster API unavailable');
 }
 
 async function fetchBinance(asset) {
@@ -139,7 +161,12 @@ app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
         timestamp: new Date().toISOString(),
-        lighterConnected: lighterWs?.readyState === WebSocket.OPEN
+        lighterConnected: lighterWs?.readyState === WebSocket.OPEN,
+        lighterCache: {
+            BTC: lighterCache.BTC.lastUpdate ? `${Math.round((Date.now() - lighterCache.BTC.lastUpdate)/1000)}s ago` : 'no data',
+            ETH: lighterCache.ETH.lastUpdate ? `${Math.round((Date.now() - lighterCache.ETH.lastUpdate)/1000)}s ago` : 'no data',
+            SOL: lighterCache.SOL.lastUpdate ? `${Math.round((Date.now() - lighterCache.SOL.lastUpdate)/1000)}s ago` : 'no data'
+        }
     });
 });
 
@@ -155,6 +182,8 @@ app.post('/api/orderbook', async (req, res) => {
             fetchAster(asset).catch(e => ({ bids: [], asks: [], error: e.message })),
             fetchBinance(asset).catch(e => ({ bids: [], asks: [], error: e.message }))
         ]);
+        
+        console.log(`[API] Results - HL: ${hyperliquid.bids?.length || 0} bids, LT: ${lighter.bids?.length || 0} bids, AS: ${aster.bids?.length || 0} bids, BN: ${binance.bids?.length || 0} bids`);
         
         res.json({ success: true, asset, timestamp: new Date().toISOString(), hyperliquid, lighter, aster, binance });
     } catch (error) {
