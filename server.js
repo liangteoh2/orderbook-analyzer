@@ -1,95 +1,52 @@
 // server.js - Backend API server for orderbook data
+// Using REST APIs for ALL exchanges (more reliable than WebSocket)
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const path = require('path');
-const WebSocket = require('ws');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Enable CORS for all origins
 app.use(cors());
 app.use(express.json());
-
-// Serve static files (the HTML frontend)
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Asset mapping - 4 exchanges
+// Asset mapping - market_id for Lighter: ETH=0, BTC=1, SOL=2
 const assetMapping = {
     'BTC': { hl: 'BTC', lighter: 1, aster: 'BTCUSDT', binance: 'BTCUSDT' },
     'ETH': { hl: 'ETH', lighter: 0, aster: 'ETHUSDT', binance: 'ETHUSDT' },
     'SOL': { hl: 'SOL', lighter: 2, aster: 'SOLUSDT', binance: 'SOLUSDT' }
 };
 
-// In-memory cache for Lighter data (updated via WebSocket)
-let lighterCache = {
-    BTC: { bids: [], asks: [], lastUpdate: null },
-    ETH: { bids: [], asks: [], lastUpdate: null },
-    SOL: { bids: [], asks: [], lastUpdate: null }
-};
+// Lighter market details cache (to get symbol info)
+let lighterMarkets = null;
 
-// Lighter WebSocket connection
-let lighterWs = null;
-let lighterReconnectTimer = null;
-
-function connectLighterWebSocket() {
-    if (lighterWs) {
-        try { lighterWs.close(); } catch (e) {}
-    }
-    
-    console.log('[Lighter WS] Connecting...');
-    
+// Fetch Lighter markets info (for symbol lookup)
+async function fetchLighterMarkets() {
     try {
-        lighterWs = new WebSocket('wss://wss.lighter.xyz/v1/stream');
-        
-        lighterWs.on('open', () => {
-            console.log('[Lighter WS] Connected!');
-            // Subscribe to all markets
-            [0, 1, 2].forEach(marketId => {
-                lighterWs.send(JSON.stringify({
-                    method: 'subscribe',
-                    params: { channel: 'orderbook', market_id: marketId }
-                }));
+        const response = await fetch('https://mainnet.zklighter.elliot.ai/api/v1/orderBooks');
+        const data = await response.json();
+        if (data.order_books) {
+            lighterMarkets = {};
+            data.order_books.forEach(market => {
+                lighterMarkets[market.market_index] = market;
             });
-        });
-        
-        lighterWs.on('message', (data) => {
-            try {
-                const msg = JSON.parse(data.toString());
-                if (msg.channel === 'orderbook' && msg.data) {
-                    const marketId = msg.data.market_id;
-                    const asset = marketId === 1 ? 'BTC' : marketId === 0 ? 'ETH' : 'SOL';
-                    
-                    if (msg.data.bids && msg.data.asks) {
-                        lighterCache[asset] = {
-                            bids: msg.data.bids.map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size) })),
-                            asks: msg.data.asks.map(a => ({ price: parseFloat(a.price), size: parseFloat(a.size) })),
-                            lastUpdate: Date.now()
-                        };
-                    }
-                }
-            } catch (e) {}
-        });
-        
-        lighterWs.on('close', () => {
-            console.log('[Lighter WS] Disconnected, reconnecting in 5s...');
-            lighterReconnectTimer = setTimeout(connectLighterWebSocket, 5000);
-        });
-        
-        lighterWs.on('error', (err) => {
-            console.log('[Lighter WS] Error:', err.message);
-        });
+            console.log('[Lighter] Markets loaded:', Object.keys(lighterMarkets).length);
+        }
     } catch (e) {
-        console.log('[Lighter WS] Failed to connect:', e.message);
-        lighterReconnectTimer = setTimeout(connectLighterWebSocket, 5000);
+        console.log('[Lighter] Failed to load markets:', e.message);
     }
 }
 
-// Start Lighter WebSocket
-connectLighterWebSocket();
+// Initialize markets on startup
+fetchLighterMarkets();
 
-// Fetch functions for each exchange
+// ============================================
+// FETCH FUNCTIONS - ALL USING REST APIs
+// ============================================
+
+// Hyperliquid - REST API
 async function fetchHyperliquid(asset) {
     const response = await fetch('https://api.hyperliquid.xyz/info', {
         method: 'POST',
@@ -104,31 +61,72 @@ async function fetchHyperliquid(asset) {
     };
 }
 
-function fetchLighterFromCache(asset) {
-    const cached = lighterCache[asset];
-    if (cached && cached.bids.length > 0 && cached.lastUpdate && (Date.now() - cached.lastUpdate < 30000)) {
-        return { bids: cached.bids, asks: cached.asks };
+// Lighter - REST API (NEW - more reliable than WebSocket!)
+async function fetchLighter(asset) {
+    const marketId = assetMapping[asset].lighter;
+    
+    // Try the orderBookOrders endpoint first (most detailed)
+    const url = `https://mainnet.zklighter.elliot.ai/api/v1/orderBookOrders?market_id=${marketId}`;
+    
+    const response = await fetch(url, {
+        headers: {
+            'Accept': 'application/json',
+            'User-Agent': 'OrderbookAnalyzer/1.0'
+        }
+    });
+    
+    if (!response.ok) {
+        throw new Error(`Lighter API returned ${response.status}`);
     }
-    return { bids: [], asks: [] };
+    
+    const data = await response.json();
+    
+    // Parse the response - format: { asks: [...], bids: [...] }
+    if (!data.asks && !data.bids) {
+        // Try alternative endpoint: orderBookDetails
+        const altUrl = `https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails?market_id=${marketId}`;
+        const altResponse = await fetch(altUrl);
+        const altData = await altResponse.json();
+        
+        if (altData.asks && altData.bids) {
+            return {
+                bids: altData.bids.map(l => ({ 
+                    price: parseFloat(l.price), 
+                    size: parseFloat(l.size || l.base_amount || l.remaining_base_amount) 
+                })).sort((a, b) => b.price - a.price),
+                asks: altData.asks.map(l => ({ 
+                    price: parseFloat(l.price), 
+                    size: parseFloat(l.size || l.base_amount || l.remaining_base_amount) 
+                })).sort((a, b) => a.price - b.price)
+            };
+        }
+        throw new Error('No orderbook data from Lighter');
+    }
+    
+    return {
+        bids: (data.bids || []).map(l => ({ 
+            price: parseFloat(l.price), 
+            size: parseFloat(l.size || l.base_amount || l.remaining_base_amount) 
+        })).sort((a, b) => b.price - a.price),
+        asks: (data.asks || []).map(l => ({ 
+            price: parseFloat(l.price), 
+            size: parseFloat(l.size || l.base_amount || l.remaining_base_amount) 
+        })).sort((a, b) => a.price - b.price)
+    };
 }
 
-// UPDATED: Aster API URL (changed from perp-api.aster.finance to fapi.asterdex.com)
+// Aster - REST API (updated URL)
 async function fetchAster(asset) {
     const symbol = assetMapping[asset].aster;
-    // Try the new API endpoint first
     const urls = [
         `https://fapi.asterdex.com/fapi/v1/depth?symbol=${symbol}&limit=100`,
         `https://fapi.asterdex.com/fapi/v3/depth?symbol=${symbol}&limit=100`
     ];
     
-    let lastError = null;
     for (const url of urls) {
         try {
             const response = await fetch(url, {
-                headers: {
-                    'User-Agent': 'OrderbookAnalyzer/1.0',
-                    'Accept': 'application/json'
-                }
+                headers: { 'User-Agent': 'OrderbookAnalyzer/1.0', 'Accept': 'application/json' }
             });
             if (!response.ok) continue;
             const data = await response.json();
@@ -138,13 +136,12 @@ async function fetchAster(asset) {
                     asks: data.asks.map(l => ({ price: parseFloat(l[0]), size: parseFloat(l[1]) }))
                 };
             }
-        } catch (e) {
-            lastError = e;
-        }
+        } catch (e) { continue; }
     }
-    throw new Error(lastError?.message || 'Aster API unavailable');
+    throw new Error('Aster API unavailable');
 }
 
+// Binance Futures - REST API
 async function fetchBinance(asset) {
     const symbol = assetMapping[asset].binance;
     const response = await fetch(`https://fapi.binance.com/fapi/v1/depth?symbol=${symbol}&limit=100`);
@@ -156,37 +153,60 @@ async function fetchBinance(asset) {
     };
 }
 
+// ============================================
+// API ENDPOINTS
+// ============================================
+
 // Health check
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
+    // Quick test of Lighter API
+    let lighterStatus = 'unknown';
+    try {
+        const response = await fetch('https://mainnet.zklighter.elliot.ai/api/v1/orderBooks');
+        lighterStatus = response.ok ? 'ok' : 'error';
+    } catch (e) {
+        lighterStatus = 'error: ' + e.message;
+    }
+    
     res.json({ 
         status: 'ok', 
         timestamp: new Date().toISOString(),
-        lighterConnected: lighterWs?.readyState === WebSocket.OPEN,
-        lighterCache: {
-            BTC: lighterCache.BTC.lastUpdate ? `${Math.round((Date.now() - lighterCache.BTC.lastUpdate)/1000)}s ago` : 'no data',
-            ETH: lighterCache.ETH.lastUpdate ? `${Math.round((Date.now() - lighterCache.ETH.lastUpdate)/1000)}s ago` : 'no data',
-            SOL: lighterCache.SOL.lastUpdate ? `${Math.round((Date.now() - lighterCache.SOL.lastUpdate)/1000)}s ago` : 'no data'
-        }
+        method: 'REST API (no WebSocket)',
+        lighter: lighterStatus,
+        markets: lighterMarkets ? Object.keys(lighterMarkets).length : 0
     });
 });
 
 // Main orderbook API
 app.post('/api/orderbook', async (req, res) => {
     const { asset = 'BTC' } = req.body;
-    console.log(`[API] Fetching ${asset}...`);
+    const startTime = Date.now();
+    console.log(`\n[API] Fetching ${asset}...`);
     
     try {
+        // Fetch all exchanges in parallel using REST APIs
         const [hyperliquid, lighter, aster, binance] = await Promise.all([
-            fetchHyperliquid(asset).catch(e => ({ bids: [], asks: [], error: e.message })),
-            Promise.resolve(fetchLighterFromCache(asset)),
-            fetchAster(asset).catch(e => ({ bids: [], asks: [], error: e.message })),
-            fetchBinance(asset).catch(e => ({ bids: [], asks: [], error: e.message }))
+            fetchHyperliquid(asset).catch(e => { console.log(`[HL] Error: ${e.message}`); return { bids: [], asks: [], error: e.message }; }),
+            fetchLighter(asset).catch(e => { console.log(`[LT] Error: ${e.message}`); return { bids: [], asks: [], error: e.message }; }),
+            fetchAster(asset).catch(e => { console.log(`[AS] Error: ${e.message}`); return { bids: [], asks: [], error: e.message }; }),
+            fetchBinance(asset).catch(e => { console.log(`[BN] Error: ${e.message}`); return { bids: [], asks: [], error: e.message }; })
         ]);
         
-        console.log(`[API] Results - HL: ${hyperliquid.bids?.length || 0} bids, LT: ${lighter.bids?.length || 0} bids, AS: ${aster.bids?.length || 0} bids, BN: ${binance.bids?.length || 0} bids`);
+        const fetchTime = Date.now() - startTime;
+        console.log(`[API] HL: ${hyperliquid.bids?.length || 0}, LT: ${lighter.bids?.length || 0}, AS: ${aster.bids?.length || 0}, BN: ${binance.bids?.length || 0} bids (${fetchTime}ms)`);
         
-        res.json({ success: true, asset, timestamp: new Date().toISOString(), hyperliquid, lighter, aster, binance });
+        res.json({ 
+            success: true, 
+            asset, 
+            timestamp: new Date().toISOString(), 
+            fetchTimeMs: fetchTime,
+            hyperliquid, 
+            lighter, 
+            aster, 
+            binance 
+        });
     } catch (error) {
+        console.error(`[API] Error: ${error.message}`);
         res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -200,7 +220,7 @@ app.get('/api/sheets', async (req, res) => {
     try {
         const [hyperliquid, lighter, aster, binance] = await Promise.all([
             fetchHyperliquid(asset).catch(e => null),
-            Promise.resolve(fetchLighterFromCache(asset)),
+            fetchLighter(asset).catch(e => null),
             fetchAster(asset).catch(e => null),
             fetchBinance(asset).catch(e => null)
         ]);
@@ -271,9 +291,10 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`\n${'='.repeat(60)}`);
-    console.log(`🚀 Orderbook Analyzer Server`);
+    console.log(`🚀 Orderbook Analyzer Server (REST API Mode)`);
     console.log(`${'='.repeat(60)}`);
-    console.log(`📡 Running on port ${PORT}`);
-    console.log(`🌐 API: /api/orderbook, /api/sheets`);
+    console.log(`📡 Port: ${PORT}`);
+    console.log(`🔗 Method: Pure REST API (no WebSocket)`);
+    console.log(`📊 Exchanges: Hyperliquid, Lighter, Aster, Binance`);
     console.log(`${'='.repeat(60)}\n`);
 });
