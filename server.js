@@ -12,35 +12,12 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Asset mapping - market_id for Lighter: ETH=0, BTC=1, SOL=2
+// Asset mapping - market_index for Lighter: ETH=0, BTC=1, SOL=2
 const assetMapping = {
     'BTC': { hl: 'BTC', lighter: 1, aster: 'BTCUSDT', binance: 'BTCUSDT' },
     'ETH': { hl: 'ETH', lighter: 0, aster: 'ETHUSDT', binance: 'ETHUSDT' },
     'SOL': { hl: 'SOL', lighter: 2, aster: 'SOLUSDT', binance: 'SOLUSDT' }
 };
-
-// Lighter market details cache (to get symbol info)
-let lighterMarkets = null;
-
-// Fetch Lighter markets info (for symbol lookup)
-async function fetchLighterMarkets() {
-    try {
-        const response = await fetch('https://mainnet.zklighter.elliot.ai/api/v1/orderBooks');
-        const data = await response.json();
-        if (data.order_books) {
-            lighterMarkets = {};
-            data.order_books.forEach(market => {
-                lighterMarkets[market.market_index] = market;
-            });
-            console.log('[Lighter] Markets loaded:', Object.keys(lighterMarkets).length);
-        }
-    } catch (e) {
-        console.log('[Lighter] Failed to load markets:', e.message);
-    }
-}
-
-// Initialize markets on startup
-fetchLighterMarkets();
 
 // ============================================
 // FETCH FUNCTIONS - ALL USING REST APIs
@@ -61,58 +38,82 @@ async function fetchHyperliquid(asset) {
     };
 }
 
-// Lighter - REST API (NEW - more reliable than WebSocket!)
+// Lighter - REST API (using correct parameter: market_index)
 async function fetchLighter(asset) {
-    const marketId = assetMapping[asset].lighter;
+    const marketIndex = assetMapping[asset].lighter;
     
-    // Try the orderBookOrders endpoint first (most detailed)
-    const url = `https://mainnet.zklighter.elliot.ai/api/v1/orderBookOrders?market_id=${marketId}`;
+    // Try orderBookDetails endpoint first (has aggregated bids/asks)
+    const endpoints = [
+        `https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails?market_index=${marketIndex}`,
+        `https://mainnet.zklighter.elliot.ai/api/v1/orderBookOrders?market_index=${marketIndex}`
+    ];
     
-    const response = await fetch(url, {
-        headers: {
-            'Accept': 'application/json',
-            'User-Agent': 'OrderbookAnalyzer/1.0'
+    let lastError = null;
+    
+    for (const url of endpoints) {
+        try {
+            const response = await fetch(url, {
+                headers: {
+                    'Accept': 'application/json',
+                    'User-Agent': 'OrderbookAnalyzer/1.0'
+                }
+            });
+            
+            if (!response.ok) {
+                lastError = new Error(`Lighter API returned ${response.status}`);
+                continue;
+            }
+            
+            const data = await response.json();
+            
+            // orderBookDetails format: { asks: [{price, size}], bids: [{price, size}] }
+            if (data.asks && data.bids && Array.isArray(data.asks) && Array.isArray(data.bids)) {
+                const bids = data.bids
+                    .map(l => ({ 
+                        price: parseFloat(l.price || l.px || 0), 
+                        size: parseFloat(l.size || l.sz || l.remaining_base_amount || 0) 
+                    }))
+                    .filter(l => l.price > 0 && l.size > 0)
+                    .sort((a, b) => b.price - a.price);
+                
+                const asks = data.asks
+                    .map(l => ({ 
+                        price: parseFloat(l.price || l.px || 0), 
+                        size: parseFloat(l.size || l.sz || l.remaining_base_amount || 0) 
+                    }))
+                    .filter(l => l.price > 0 && l.size > 0)
+                    .sort((a, b) => a.price - b.price);
+                
+                if (bids.length > 0 && asks.length > 0) {
+                    return { bids, asks };
+                }
+            }
+            
+            // orderBookOrders format might be different - try alternative parsing
+            if (data.orders && Array.isArray(data.orders)) {
+                const bids = data.orders
+                    .filter(o => !o.is_ask)
+                    .map(o => ({ price: parseFloat(o.price), size: parseFloat(o.remaining_base_amount || o.size) }))
+                    .filter(l => l.price > 0 && l.size > 0)
+                    .sort((a, b) => b.price - a.price);
+                
+                const asks = data.orders
+                    .filter(o => o.is_ask)
+                    .map(o => ({ price: parseFloat(o.price), size: parseFloat(o.remaining_base_amount || o.size) }))
+                    .filter(l => l.price > 0 && l.size > 0)
+                    .sort((a, b) => a.price - b.price);
+                
+                if (bids.length > 0 && asks.length > 0) {
+                    return { bids, asks };
+                }
+            }
+            
+        } catch (e) {
+            lastError = e;
         }
-    });
-    
-    if (!response.ok) {
-        throw new Error(`Lighter API returned ${response.status}`);
     }
     
-    const data = await response.json();
-    
-    // Parse the response - format: { asks: [...], bids: [...] }
-    if (!data.asks && !data.bids) {
-        // Try alternative endpoint: orderBookDetails
-        const altUrl = `https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails?market_id=${marketId}`;
-        const altResponse = await fetch(altUrl);
-        const altData = await altResponse.json();
-        
-        if (altData.asks && altData.bids) {
-            return {
-                bids: altData.bids.map(l => ({ 
-                    price: parseFloat(l.price), 
-                    size: parseFloat(l.size || l.base_amount || l.remaining_base_amount) 
-                })).sort((a, b) => b.price - a.price),
-                asks: altData.asks.map(l => ({ 
-                    price: parseFloat(l.price), 
-                    size: parseFloat(l.size || l.base_amount || l.remaining_base_amount) 
-                })).sort((a, b) => a.price - b.price)
-            };
-        }
-        throw new Error('No orderbook data from Lighter');
-    }
-    
-    return {
-        bids: (data.bids || []).map(l => ({ 
-            price: parseFloat(l.price), 
-            size: parseFloat(l.size || l.base_amount || l.remaining_base_amount) 
-        })).sort((a, b) => b.price - a.price),
-        asks: (data.asks || []).map(l => ({ 
-            price: parseFloat(l.price), 
-            size: parseFloat(l.size || l.base_amount || l.remaining_base_amount) 
-        })).sort((a, b) => a.price - b.price)
-    };
+    throw lastError || new Error('No valid data from Lighter');
 }
 
 // Aster - REST API (updated URL)
@@ -159,11 +160,10 @@ async function fetchBinance(asset) {
 
 // Health check
 app.get('/health', async (req, res) => {
-    // Quick test of Lighter API
     let lighterStatus = 'unknown';
     try {
         const response = await fetch('https://mainnet.zklighter.elliot.ai/api/v1/orderBooks');
-        lighterStatus = response.ok ? 'ok' : 'error';
+        lighterStatus = response.ok ? 'ok' : `error: ${response.status}`;
     } catch (e) {
         lighterStatus = 'error: ' + e.message;
     }
@@ -172,8 +172,7 @@ app.get('/health', async (req, res) => {
         status: 'ok', 
         timestamp: new Date().toISOString(),
         method: 'REST API (no WebSocket)',
-        lighter: lighterStatus,
-        markets: lighterMarkets ? Object.keys(lighterMarkets).length : 0
+        lighter: lighterStatus
     });
 });
 
@@ -184,7 +183,6 @@ app.post('/api/orderbook', async (req, res) => {
     console.log(`\n[API] Fetching ${asset}...`);
     
     try {
-        // Fetch all exchanges in parallel using REST APIs
         const [hyperliquid, lighter, aster, binance] = await Promise.all([
             fetchHyperliquid(asset).catch(e => { console.log(`[HL] Error: ${e.message}`); return { bids: [], asks: [], error: e.message }; }),
             fetchLighter(asset).catch(e => { console.log(`[LT] Error: ${e.message}`); return { bids: [], asks: [], error: e.message }; }),
