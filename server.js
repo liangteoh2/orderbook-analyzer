@@ -65,7 +65,8 @@ async function fetchLighter(asset) {
     }
     
     const marketIndex = assetMapping[asset].lighter;
-    const url = `https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails?market_index=${marketIndex}`;
+    // FIXED: Use orderBookOrders endpoint, not orderBookDetails
+    const url = `https://mainnet.zklighter.elliot.ai/api/v1/orderBookOrders?market_index=${marketIndex}`;
     
     console.log(`[LT] Fetching ${asset} (market_index=${marketIndex})...`);
     
@@ -99,9 +100,9 @@ async function fetchLighter(asset) {
         
         const data = await response.json();
         
-        // Parse orderbook data - handle multiple possible formats
-        let bids = data.bids || data.bid || [];
-        let asks = data.asks || data.ask || [];
+        // Parse orderbook data from Lighter's format
+        let bids = data.bids || [];
+        let asks = data.asks || [];
         
         console.log(`[LT] Raw data: ${bids.length} bids, ${asks.length} asks`);
         
@@ -110,18 +111,19 @@ async function fetchLighter(asset) {
             throw new Error('Empty orderbook data');
         }
         
+        // Lighter format: each order is {price: string, size: string, ...}
         const result = {
             bids: bids
                 .map(l => ({
-                    price: parseFloat(l.price || l.Price || l[0] || 0),
-                    size: parseFloat(l.size || l.Size || l.quantity || l[1] || 0)
+                    price: parseFloat(l.price || 0),
+                    size: parseFloat(l.size || 0)
                 }))
                 .filter(l => l.price > 0 && l.size > 0)
                 .sort((a, b) => b.price - a.price),
             asks: asks
                 .map(l => ({
-                    price: parseFloat(l.price || l.Price || l[0] || 0),
-                    size: parseFloat(l.size || l.Size || l.quantity || l[1] || 0)
+                    price: parseFloat(l.price || 0),
+                    size: parseFloat(l.size || 0)
                 }))
                 .filter(l => l.price > 0 && l.size > 0)
                 .sort((a, b) => a.price - b.price)
@@ -131,7 +133,7 @@ async function fetchLighter(asset) {
             throw new Error('No valid price levels after parsing');
         }
         
-        console.log(`[LT] Parsed: ${result.bids.length} bids, ${result.asks.length} asks | Best bid: $${result.bids[0].price.toFixed(2)}, Best ask: $${result.asks[0].price.toFixed(2)}`);
+        console.log(`[LT] Parsed: ${result.bids.length} bids, ${result.asks.length} asks | Best bid: ${result.bids[0].price.toFixed(2)}, Best ask: ${result.asks[0].price.toFixed(2)}`);
         console.log(`[LT] Rate limit: ${rateLimitStats.lighter.remaining}/${rateLimitStats.lighter.limit}`);
         
         // Cache the result
@@ -282,7 +284,8 @@ app.get('/api/test-lighter', async (req, res) => {
         return res.status(400).json({ error: `Unknown asset: ${asset}` });
     }
     
-    const url = `https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails?market_index=${marketIndex}`;
+    // FIXED: Use orderBookOrders endpoint
+    const url = `https://mainnet.zklighter.elliot.ai/api/v1/orderBookOrders?market_index=${marketIndex}`;
     
     try {
         const response = await fetch(url, {
@@ -308,10 +311,10 @@ app.get('/api/test-lighter', async (req, res) => {
             isPremium: parseInt(response.headers.get('x-ratelimit-limit')) > 1000,
             rawData: data,
             dataKeys: Object.keys(data),
-            bidCount: (data.bids || data.bid || []).length,
-            askCount: (data.asks || data.ask || []).length,
-            sampleBid: (data.bids || data.bid || [])[0],
-            sampleAsk: (data.asks || data.ask || [])[0]
+            bidCount: (data.bids || []).length,
+            askCount: (data.asks || []).length,
+            sampleBid: (data.bids || [])[0],
+            sampleAsk: (data.asks || [])[0]
         });
     } catch (error) {
         res.status(500).json({
