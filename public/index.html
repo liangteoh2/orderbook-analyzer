@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orderbook Depth & Slippage Analyzer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
+        .container { max-width: 1400px; margin: 0 auto; background: white; border-radius: 20px; padding: 30px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+        h1 { text-align: center; color: #333; margin-bottom: 10px; font-size: 2em; }
+        .subtitle { text-align: center; color: #666; margin-bottom: 20px; font-size: 0.9em; }
+        .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 20px; padding: 20px; background: #f8f9fa; border-radius: 10px; }
+        .control-group { display: flex; flex-direction: column; }
+        label { font-weight: 600; margin-bottom: 8px; color: #555; font-size: 0.9em; }
+        input, select, button { padding: 10px; border: 2px solid #ddd; border-radius: 8px; font-size: 14px; transition: all 0.3s; }
+        input:focus, select:focus { outline: none; border-color: #667eea; }
+        button { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; cursor: pointer; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+        button:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4); }
+        button:disabled { background: #ccc; cursor: not-allowed; transform: none; }
+        .live-indicator { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; margin-left: 10px; }
+        .live-indicator.active { background: #d4edda; color: #155724; }
+        .live-indicator.inactive { background: #f8f9fa; color: #666; }
+        .live-dot { width: 10px; height: 10px; border-radius: 50%; }
+        .live-indicator.active .live-dot { background: #28a745; animation: pulse 1.5s infinite; }
+        .live-indicator.inactive .live-dot { background: #999; }
+        @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.2); } }
+        .refresh-controls { display: flex; flex-wrap: wrap; gap: 10px; padding: 15px 20px; background: #fff3cd; border-radius: 10px; margin-bottom: 20px; align-items: center; }
+        .refresh-label { font-weight: 600; color: #856404; margin-right: 10px; }
+        .refresh-btn { padding: 8px 16px; border-radius: 20px; cursor: pointer; transition: all 0.3s; font-weight: 600; font-size: 13px; border: 2px solid #ffc107; background: white; color: #856404; text-transform: none; }
+        .refresh-btn:hover { transform: scale(1.05); background: #fff3cd; }
+        .refresh-btn.active { background: #ffc107; color: #333; }
+        .refresh-btn.stop { border-color: #dc3545; color: #dc3545; }
+        .refresh-btn.stop:hover { background: #dc3545; color: white; }
+        .countdown { margin-left: auto; font-weight: 600; color: #856404; font-size: 14px; }
+        
+        /* Fee mode controls */
+        .fee-controls { display: flex; flex-wrap: wrap; gap: 10px; padding: 15px 20px; background: #e3f2fd; border-radius: 10px; margin-bottom: 20px; align-items: center; }
+        .fee-controls-label { font-weight: 600; color: #1565c0; margin-right: 10px; }
+        .fee-btn { padding: 8px 16px; border-radius: 20px; cursor: pointer; transition: all 0.3s; font-weight: 600; font-size: 13px; border: 2px solid #2196f3; background: white; color: #1565c0; text-transform: none; }
+        .fee-btn:hover { transform: scale(1.05); background: #e3f2fd; }
+        .fee-btn.active { background: #2196f3; color: white; }
+        
+        .platform-filters { display: flex; flex-wrap: wrap; gap: 10px; padding: 15px 20px; background: #f0f4ff; border-radius: 10px; margin-bottom: 20px; align-items: center; }
+        .platform-filters-label { font-weight: 600; color: #555; margin-right: 10px; }
+        .platform-toggle { display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-radius: 25px; cursor: pointer; transition: all 0.3s; user-select: none; font-weight: 600; font-size: 14px; }
+        .platform-toggle input[type="checkbox"] { display: none; }
+        .platform-toggle.hyperliquid { background: rgba(102, 126, 234, 0.2); border: 2px solid rgba(102, 126, 234, 0.5); color: #667eea; }
+        .platform-toggle.hyperliquid.active { background: rgba(102, 126, 234, 0.9); border-color: #667eea; color: white; }
+        .platform-toggle.lighter { background: rgba(255, 128, 0, 0.2); border: 2px solid rgba(255, 128, 0, 0.5); color: #e67300; }
+        .platform-toggle.lighter.active { background: rgba(255, 128, 0, 0.9); border-color: #ff8000; color: white; }
+        .platform-toggle.aster { background: rgba(255, 99, 132, 0.2); border: 2px solid rgba(255, 99, 132, 0.5); color: #e85d75; }
+        .platform-toggle.aster.active { background: rgba(255, 99, 132, 0.9); border-color: #ff6384; color: white; }
+        .platform-toggle.binance { background: rgba(255, 205, 86, 0.2); border: 2px solid rgba(255, 205, 86, 0.5); color: #c9a227; }
+        .platform-toggle.binance.active { background: rgba(255, 205, 86, 0.9); border-color: #ffcd56; color: #333; }
+        .platform-toggle:hover { transform: scale(1.05); }
+        .platform-toggle .checkmark { width: 18px; height: 18px; border-radius: 4px; border: 2px solid currentColor; display: flex; align-items: center; justify-content: center; font-size: 12px; }
+        .platform-toggle.active .checkmark::after { content: '✓'; }
+        .filter-actions { margin-left: auto; display: flex; gap: 10px; }
+        .filter-btn { padding: 6px 12px; font-size: 12px; border-radius: 15px; text-transform: none; }
+        .status { text-align: center; padding: 15px; margin-bottom: 20px; border-radius: 8px; font-weight: 600; }
+        .status.loading { background: #fff3cd; color: #856404; }
+        .status.success { background: #d4edda; color: #155724; }
+        .status.error { background: #f8d7da; color: #721c24; }
+        .status.warning { background: #fff3cd; color: #856404; }
+        .win-counter { display: flex; flex-wrap: wrap; gap: 15px; padding: 15px 20px; background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border-radius: 10px; margin-bottom: 20px; align-items: center; justify-content: center; }
+        .win-counter-label { font-weight: 600; color: #2e7d32; margin-right: 10px; }
+        .win-item { display: flex; align-items: center; gap: 8px; padding: 8px 15px; background: white; border-radius: 20px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        .win-item .platform-emoji { font-size: 16px; }
+        .win-item .win-count { font-weight: 700; font-size: 18px; color: #333; }
+        .win-item .win-pct { font-size: 12px; color: #666; margin-left: 5px; }
+        .win-item.leader { background: linear-gradient(135deg, #ffd700 0%, #ffec8b 100%); box-shadow: 0 3px 10px rgba(255, 215, 0, 0.4); }
+        .win-item.leader .win-count { color: #333; }
+        .win-item .error-count { font-size: 10px; color: #dc3545; margin-left: 5px; }
+        .reset-btn { padding: 6px 12px; font-size: 11px; border-radius: 15px; text-transform: none; background: #dc3545; border: none; }
+        .reset-btn:hover { background: #c82333; transform: none; box-shadow: none; }
+        .results { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .platform-card { background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%); padding: 20px; border-radius: 15px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
+        .platform-card h2 { margin-bottom: 15px; color: #333; border-bottom: 3px solid #667eea; padding-bottom: 10px; font-size: 1.1em; }
+        .platform-card.disabled { opacity: 0.4; filter: grayscale(100%); }
+        .platform-card.no-data { opacity: 0.6; background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%); }
+        .platform-card.no-data h2 { border-bottom-color: #dc3545; }
+        .metric { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(0,0,0,0.1); font-size: 0.9em; }
+        .metric:last-child { border-bottom: none; }
+        .metric-label { font-weight: 600; color: #555; }
+        .metric-value { font-weight: 700; color: #667eea; }
+        .metric-value.no-data { color: #dc3545; }
+        .metric-value .slippage { color: #667eea; }
+        .metric-value .fee { color: #ff9800; font-size: 0.85em; }
+        .metric-value .total { color: #e91e63; font-weight: 800; }
+        .winner { background: linear-gradient(135deg, #84fab0 0%, #8fd3f4 100%); }
+        .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .chart-container { background: #f8f9fa; padding: 20px; border-radius: 15px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
+        .chart-container h3 { margin-bottom: 15px; color: #333; text-align: center; }
+        .chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px; }
+        .chart-header h3 { margin: 0; }
+        .timeframe-selector { display: flex; gap: 5px; flex-wrap: wrap; }
+        .timeframe-btn { padding: 5px 12px; border-radius: 15px; cursor: pointer; font-weight: 600; font-size: 11px; border: 2px solid #667eea; background: white; color: #667eea; text-transform: none; transition: all 0.2s; }
+        .timeframe-btn:hover { background: #f0f4ff; transform: none; box-shadow: none; }
+        .timeframe-btn.active { background: #667eea; color: white; }
+        .export-section { text-align: center; padding: 20px; background: #f8f9fa; border-radius: 10px; }
+        .export-buttons { display: flex; gap: 15px; justify-content: center; flex-wrap: wrap; }
+        .data-table { width: 100%; margin-top: 20px; overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; background: white; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; font-weight: 600; }
+        tr:hover { background: #f5f5f5; }
+        .better { color: #28a745; font-weight: 700; }
+        .worse { color: #dc3545; font-weight: 700; }
+        .depth-analysis { margin-bottom: 30px; }
+        .depth-analysis h2 { text-align: center; color: #333; margin-bottom: 20px; font-size: 1.5em; }
+        .depth-controls { display: flex; flex-wrap: wrap; gap: 10px; padding: 15px 20px; background: #e8f4f8; border-radius: 10px; margin-bottom: 20px; align-items: center; justify-content: center; }
+        .depth-controls-label { font-weight: 600; color: #555; margin-right: 10px; }
+        .depth-mode-btn { padding: 8px 16px; border-radius: 20px; cursor: pointer; transition: all 0.3s; font-weight: 600; font-size: 13px; border: 2px solid #667eea; background: white; color: #667eea; text-transform: none; }
+        .depth-mode-btn:hover { transform: scale(1.05); }
+        .depth-mode-btn.active { background: #667eea; color: white; }
+        .depth-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }
+        .depth-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 15px; color: white; box-shadow: 0 5px 20px rgba(102, 126, 234, 0.3); }
+        .depth-card.sell { background: linear-gradient(135deg, #ff6b6b 0%, #ee5a5a 100%); box-shadow: 0 5px 20px rgba(255, 107, 107, 0.3); }
+        .depth-card.buy { background: linear-gradient(135deg, #51cf66 0%, #40c057 100%); box-shadow: 0 5px 20px rgba(81, 207, 102, 0.3); }
+        .depth-card h3 { font-size: 1.1em; margin-bottom: 15px; opacity: 0.9; }
+        .depth-card .target-price { font-size: 1.8em; font-weight: 700; margin-bottom: 10px; }
+        .depth-card .current-price { font-size: 0.9em; opacity: 0.8; margin-bottom: 15px; }
+        .depth-card .depth-value { font-size: 1.6em; font-weight: 700; margin-bottom: 5px; }
+        .depth-card .depth-label { font-size: 0.85em; opacity: 0.8; }
+        .depth-card .platform-depths { margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.3); }
+        .depth-card .platform-row { display: flex; justify-content: space-between; padding: 5px 0; font-size: 0.9em; }
+        .depth-card .platform-row .platform-name { opacity: 0.9; }
+        .depth-card .platform-row .platform-value { font-weight: 600; }
+        .depth-card .platform-row.no-data { opacity: 0.5; }
+        .last-update { text-align: center; color: #666; font-size: 0.85em; margin-bottom: 15px; }
+        @media (max-width: 768px) { .controls { grid-template-columns: 1fr; } .charts { grid-template-columns: 1fr; } .platform-filters, .refresh-controls, .fee-controls { flex-direction: column; align-items: flex-start; } .filter-actions, .countdown { margin-left: 0; margin-top: 10px; } .depth-controls { flex-direction: column; } .chart-header { flex-direction: column; align-items: flex-start; } .win-counter { flex-direction: column; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 Orderbook Depth & Slippage Analyzer 
+            <span class="live-indicator inactive" id="liveIndicator">
+                <span class="live-dot"></span>
+                <span id="liveText">OFFLINE</span>
+            </span>
+        </h1>
+        <p class="subtitle">Compare slippage & depth across Hyperliquid, Lighter, Aster & Binance</p>
+        
+        <div class="controls">
+            <div class="control-group"><label for="asset">Trading Pair:</label><select id="asset"><option value="BTC">BTC</option><option value="ETH">ETH</option><option value="SOL">SOL</option></select></div>
+            <div class="control-group"><label for="tradeSize">Trade Size (USD):</label><input type="number" id="tradeSize" value="10000" min="100" step="100"></div>
+            <div class="control-group"><label for="side">Order Side:</label><select id="side"><option value="buy">Buy</option><option value="sell">Sell</option></select></div>
+            <div class="control-group" style="display: flex; align-items: flex-end;"><button id="fetchBtn">Fetch Once</button></div>
+        </div>
+        
+        <div class="refresh-controls">
+            <span class="refresh-label">⚡ Live Refresh:</span>
+            <button class="refresh-btn" data-interval="5000">5 sec</button>
+            <button class="refresh-btn" data-interval="10000">10 sec</button>
+            <button class="refresh-btn" data-interval="30000">30 sec</button>
+            <button class="refresh-btn" data-interval="60000">1 min</button>
+            <button class="refresh-btn" data-interval="300000">5 min</button>
+            <button class="refresh-btn stop" id="stopRefreshBtn" style="display:none;">⏹ Stop</button>
+            <span class="countdown" id="countdown"></span>
+        </div>
+        
+        <!-- Fee Mode Controls -->
+        <div class="fee-controls">
+            <span class="fee-controls-label">💰 Fee Display:</span>
+            <button class="fee-btn active" data-fee="none">Slippage Only</button>
+            <button class="fee-btn" data-fee="retail">+ Retail Taker Fee</button>
+            <button class="fee-btn" data-fee="mm">+ MM Taker Fee</button>
+        </div>
+        
+        <div class="platform-filters">
+            <span class="platform-filters-label">🔍 Compare Platforms:</span>
+            <label class="platform-toggle hyperliquid active" id="toggle-hyperliquid"><input type="checkbox" checked data-platform="hyperliquid"><span class="checkmark"></span><span>🟣 Hyperliquid</span></label>
+            <label class="platform-toggle lighter active" id="toggle-lighter"><input type="checkbox" checked data-platform="lighter"><span class="checkmark"></span><span>🟠 Lighter</span></label>
+            <label class="platform-toggle aster active" id="toggle-aster"><input type="checkbox" checked data-platform="aster"><span class="checkmark"></span><span>⭐ Aster</span></label>
+            <label class="platform-toggle binance active" id="toggle-binance"><input type="checkbox" checked data-platform="binance"><span class="checkmark"></span><span>🟡 Binance</span></label>
+            <div class="filter-actions"><button class="filter-btn" id="selectAllBtn">Select All</button><button class="filter-btn" id="clearAllBtn">Clear All</button></div>
+        </div>
+        
+        <div class="win-counter" id="winCounter">
+            <span class="win-counter-label">🏆 Win Count:</span>
+            <div class="win-item" id="win-hyperliquid"><span class="platform-emoji">🟣</span><span class="win-count">0</span><span class="win-pct">(0%)</span><span class="error-count"></span></div>
+            <div class="win-item" id="win-lighter"><span class="platform-emoji">🟠</span><span class="win-count">0</span><span class="win-pct">(0%)</span><span class="error-count"></span></div>
+            <div class="win-item" id="win-aster"><span class="platform-emoji">⭐</span><span class="win-count">0</span><span class="win-pct">(0%)</span><span class="error-count"></span></div>
+            <div class="win-item" id="win-binance"><span class="platform-emoji">🟡</span><span class="win-count">0</span><span class="win-pct">(0%)</span><span class="error-count"></span></div>
+            <button class="reset-btn" id="resetWinsBtn">Reset</button>
+        </div>
+        
+        <div id="status" class="status" style="display: none;"></div>
+        <div id="lastUpdate" class="last-update" style="display: none;"></div>
+        
+        <div id="depthAnalysis" class="depth-analysis" style="display: none;">
+            <h2>📏 Orderbook Depth Analysis</h2>
+            <div class="depth-controls">
+                <span class="depth-controls-label">Depth Range:</span>
+                <button class="depth-mode-btn active" data-mode="round">Round Numbers</button>
+                <button class="depth-mode-btn" data-mode="0.5">±0.5%</button>
+                <button class="depth-mode-btn" data-mode="1">±1%</button>
+                <button class="depth-mode-btn" data-mode="2">±2%</button>
+                <button class="depth-mode-btn" data-mode="5">±5%</button>
+                <button class="depth-mode-btn" data-mode="10">±10%</button>
+            </div>
+            <div id="depthCards" class="depth-cards"></div>
+        </div>
+        
+        <div id="results" class="results" style="display: none;"></div>
+        <div id="charts" class="charts" style="display: none;">
+            <div class="chart-container"><h3>Slippage Comparison (%)</h3><canvas id="slippageChart"></canvas></div>
+            <div class="chart-container"><h3>Orderbook Depth (levels)</h3><canvas id="depthChart"></canvas></div>
+            <div class="chart-container" style="grid-column: 1 / -1;">
+                <div class="chart-header">
+                    <h3>📈 Slippage Over Time</h3>
+                    <div class="timeframe-selector">
+                        <button class="timeframe-btn" data-points="10">10</button>
+                        <button class="timeframe-btn" data-points="20">20</button>
+                        <button class="timeframe-btn active" data-points="50">50</button>
+                        <button class="timeframe-btn" data-points="100">100</button>
+                        <button class="timeframe-btn" data-points="200">200</button>
+                        <button class="timeframe-btn" data-points="500">All</button>
+                    </div>
+                </div>
+                <canvas id="timeSeriesChart"></canvas>
+            </div>
+        </div>
+        <div class="export-section" style="display: none;" id="exportSection">
+            <h3>Export Data</h3>
+            <div class="export-buttons"><button id="copyBtn">📊 Copy for Sheets</button><button id="downloadBtn">💾 Download CSV</button><button id="historyBtn">📈 View History</button></div>
+            <div class="data-table"><table id="dataTable"></table></div>
+        </div>
+    </div>
+    <script>
+        let autoRefreshInterval = null, countdownInterval = null, historicalData = [], slippageChart = null, depthChart = null, timeSeriesChart = null, latestData = null, latestOrderbooks = null;
+        let currentDepthMode = 'round';
+        let currentRefreshInterval = 0;
+        let nextRefreshTime = 0;
+        let chartTimeframePoints = 50;
+        let currentFeeMode = 'none'; // 'none', 'retail', 'mm'
+        
+        // Fee tiers (in percentage)
+        const feeTiers = {
+            hyperliquid: { retail: 0.045, mm: 0.01 },
+            lighter: { retail: 0, mm: 0.02 },
+            aster: { retail: 0.04, mm: 0.04 },
+            binance: { retail: 0.04, mm: 0.02 }
+        };
+        
+        // Win counter & error tracking
+        const winCounts = { hyperliquid: 0, lighter: 0, aster: 0, binance: 0 };
+        const errorCounts = { hyperliquid: 0, lighter: 0, aster: 0, binance: 0 };
+        let totalRounds = 0;
+        
+        const platformFilters = { hyperliquid: true, lighter: true, aster: true, binance: true };
+        const platformMeta = {
+            hyperliquid: { name: 'Hyperliquid', emoji: '🟣', color: 'rgba(102, 126, 234, 0.7)', borderColor: 'rgba(102, 126, 234, 1)' },
+            lighter: { name: 'Lighter', emoji: '🟠', color: 'rgba(255, 128, 0, 0.7)', borderColor: 'rgba(255, 128, 0, 1)' },
+            aster: { name: 'Aster', emoji: '⭐', color: 'rgba(255, 99, 132, 0.7)', borderColor: 'rgba(255, 99, 132, 1)' },
+            binance: { name: 'Binance', emoji: '🟡', color: 'rgba(255, 205, 86, 0.7)', borderColor: 'rgba(255, 205, 86, 1)' }
+        };
+        const BACKEND_URL = '';
+        const roundIntervals = { 'BTC': 1000, 'ETH': 100, 'SOL': 10 };
+        
+        function getEnabledPlatforms() { return Object.keys(platformFilters).filter(p => platformFilters[p]); }
+        
+        function isValidData(result) { return result && result.midPrice > 0 && result.avgExecutionPrice > 0; }
+        function getValidPlatforms(results) { return getEnabledPlatforms().filter(p => isValidData(results[p])); }
+        
+        function getFee(platform) {
+            if (currentFeeMode === 'none') return 0;
+            return feeTiers[platform]?.[currentFeeMode] || 0;
+        }
+        
+        function getTotalCost(slippage, platform) {
+            return slippage + getFee(platform);
+        }
+        
+        function initFeeButtons() {
+            document.querySelectorAll('.fee-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    document.querySelectorAll('.fee-btn').forEach(b => b.classList.remove('active'));
+                    this.classList.add('active');
+                    currentFeeMode = this.dataset.fee;
+                    if (latestData && latestOrderbooks) {
+                        const asset = document.getElementById('asset').value;
+                        displayResults(latestData, asset, parseFloat(document.getElementById('tradeSize').value), document.getElementById('side').value, findWinner(latestData), getValidPlatforms(latestData));
+                    }
+                });
+            });
+        }
+        
+        function findWinner(results) {
+            const validPlatforms = getValidPlatforms(results);
+            let winner = null, minTotal = Infinity;
+            validPlatforms.forEach(p => {
+                const total = getTotalCost(results[p].slippagePct, p);
+                if (total < minTotal) { minTotal = total; winner = p; }
+            });
+            return winner;
+        }
+        
+        function updateWinCounter(winner, invalidPlatforms) {
+            invalidPlatforms.forEach(p => { if (platformFilters[p]) errorCounts[p]++; });
+            if (winner && platformFilters[winner]) { winCounts[winner]++; totalRounds++; }
+            renderWinCounter();
+        }
+        
+        function renderWinCounter() {
+            const enabled = getEnabledPlatforms();
+            let maxWins = 0, leader = null;
+            enabled.forEach(p => { if (winCounts[p] > maxWins) { maxWins = winCounts[p]; leader = p; } });
+            ['hyperliquid', 'lighter', 'aster', 'binance'].forEach(p => {
+                const el = document.getElementById('win-' + p);
+                const count = winCounts[p], errors = errorCounts[p];
+                const pct = totalRounds > 0 ? ((count / totalRounds) * 100).toFixed(1) : 0;
+                el.querySelector('.win-count').textContent = count;
+                el.querySelector('.win-pct').textContent = `(${pct}%)`;
+                el.querySelector('.error-count').textContent = errors > 0 ? `⚠${errors}` : '';
+                if (p === leader && maxWins > 0) el.classList.add('leader'); else el.classList.remove('leader');
+                el.style.display = platformFilters[p] ? 'flex' : 'none';
+            });
+        }
+        
+        function resetWinCounts() {
+            Object.keys(winCounts).forEach(p => { winCounts[p] = 0; errorCounts[p] = 0; });
+            totalRounds = 0;
+            renderWinCounter();
+        }
+        
+        function updateLiveIndicator(isLive) {
+            const indicator = document.getElementById('liveIndicator'), text = document.getElementById('liveText');
+            if (isLive) { indicator.classList.remove('inactive'); indicator.classList.add('active'); text.textContent = 'LIVE'; }
+            else { indicator.classList.remove('active'); indicator.classList.add('inactive'); text.textContent = 'OFFLINE'; }
+        }
+        
+        function updateCountdown() {
+            if (!autoRefreshInterval || nextRefreshTime === 0) { document.getElementById('countdown').textContent = ''; return; }
+            const remaining = Math.max(0, Math.ceil((nextRefreshTime - Date.now()) / 1000));
+            document.getElementById('countdown').textContent = `Next refresh in ${remaining}s`;
+        }
+        
+        function startAutoRefresh(interval) {
+            stopAutoRefresh();
+            currentRefreshInterval = interval;
+            document.querySelectorAll('.refresh-btn[data-interval]').forEach(btn => { btn.classList.toggle('active', parseInt(btn.dataset.interval) === interval); });
+            document.getElementById('stopRefreshBtn').style.display = 'inline-block';
+            updateLiveIndicator(true);
+            fetchData();
+            autoRefreshInterval = setInterval(() => { fetchData(); nextRefreshTime = Date.now() + interval; }, interval);
+            nextRefreshTime = Date.now() + interval;
+            countdownInterval = setInterval(updateCountdown, 1000);
+        }
+        
+        function stopAutoRefresh() {
+            if (autoRefreshInterval) { clearInterval(autoRefreshInterval); autoRefreshInterval = null; }
+            if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
+            currentRefreshInterval = 0; nextRefreshTime = 0;
+            document.querySelectorAll('.refresh-btn[data-interval]').forEach(btn => btn.classList.remove('active'));
+            document.getElementById('stopRefreshBtn').style.display = 'none';
+            document.getElementById('countdown').textContent = '';
+            updateLiveIndicator(false);
+        }
+        
+        function initRefreshButtons() {
+            document.querySelectorAll('.refresh-btn[data-interval]').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const interval = parseInt(this.dataset.interval);
+                    if (currentRefreshInterval === interval) stopAutoRefresh(); else startAutoRefresh(interval);
+                });
+            });
+            document.getElementById('stopRefreshBtn').addEventListener('click', stopAutoRefresh);
+        }
+        
+        function initTimeframeButtons() {
+            document.querySelectorAll('.timeframe-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    document.querySelectorAll('.timeframe-btn').forEach(b => b.classList.remove('active'));
+                    this.classList.add('active');
+                    chartTimeframePoints = parseInt(this.dataset.points);
+                    updateTimeSeriesChart();
+                });
+            });
+        }
+        
+        function getDepthTargets(currentPrice, asset, mode) {
+            if (mode === 'round') {
+                const interval = roundIntervals[asset] || 1000;
+                const lowerTarget = Math.floor(currentPrice / interval) * interval;
+                const upperTarget = Math.ceil(currentPrice / interval) * interval;
+                const downTarget = currentPrice === lowerTarget ? lowerTarget - interval : lowerTarget;
+                const upTarget = currentPrice === upperTarget ? upperTarget + interval : upperTarget;
+                return { downTarget, upTarget, downLabel: `$${downTarget.toLocaleString()}`, upLabel: `$${upTarget.toLocaleString()}` };
+            } else {
+                const pct = parseFloat(mode) / 100;
+                return { downTarget: currentPrice * (1 - pct), upTarget: currentPrice * (1 + pct), 
+                    downLabel: `-${mode}% ($${(currentPrice * (1 - pct)).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})})`,
+                    upLabel: `+${mode}% ($${(currentPrice * (1 + pct)).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})})` };
+            }
+        }
+        
+        function calculateDepthToTarget(orderbook, currentPrice, targetPrice, direction) {
+            if (!orderbook?.bids?.length || !orderbook?.asks?.length) return { depth: 0, levels: 0 };
+            let totalDepthUSDT = 0, levelsUsed = 0;
+            if (direction === 'down') {
+                const sortedBids = [...orderbook.bids].sort((a, b) => b.price - a.price);
+                for (const level of sortedBids) { if (level.price < targetPrice) break; if (level.price > currentPrice) continue; totalDepthUSDT += level.price * level.size; levelsUsed++; }
+            } else {
+                const sortedAsks = [...orderbook.asks].sort((a, b) => a.price - b.price);
+                for (const level of sortedAsks) { if (level.price > targetPrice) break; if (level.price < currentPrice) continue; totalDepthUSDT += level.price * level.size; levelsUsed++; }
+            }
+            return { depth: totalDepthUSDT, levels: levelsUsed };
+        }
+        
+        function displayDepthAnalysis(orderbooks, asset) {
+            const enabled = getEnabledPlatforms();
+            const validPlatforms = enabled.filter(p => { const ob = orderbooks[p]; return ob?.bids?.length > 0 && ob?.asks?.length > 0 && ob.bids[0].price > 0; });
+            if (!validPlatforms.length) { document.getElementById('depthAnalysis').style.display = 'none'; return; }
+            let totalMidPrice = 0, count = 0;
+            validPlatforms.forEach(p => { const ob = orderbooks[p]; totalMidPrice += (ob.bids[0].price + ob.asks[0].price) / 2; count++; });
+            const currentPrice = totalMidPrice / count;
+            const { downTarget, upTarget, downLabel, upLabel } = getDepthTargets(currentPrice, asset, currentDepthMode);
+            const downDepths = {}, upDepths = {};
+            let totalDown = 0, totalUp = 0, downCount = 0, upCount = 0;
+            validPlatforms.forEach(p => {
+                const ob = orderbooks[p], mid = (ob.bids[0].price + ob.asks[0].price) / 2;
+                const down = calculateDepthToTarget(ob, mid, downTarget, 'down'), up = calculateDepthToTarget(ob, mid, upTarget, 'up');
+                downDepths[p] = down.depth; upDepths[p] = up.depth;
+                if (down.depth > 0) { totalDown += down.depth; downCount++; }
+                if (up.depth > 0) { totalUp += up.depth; upCount++; }
+            });
+            const avgDown = downCount > 0 ? totalDown / downCount : 0, avgUp = upCount > 0 ? totalUp / upCount : 0;
+            let html = `<div class="depth-card sell"><h3>📉 Depth to Push DOWN</h3><div class="current-price">Current: $${currentPrice.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div><div class="target-price">→ ${downLabel}</div><div class="depth-value">$${formatLargeNumber(avgDown)}</div><div class="depth-label">Average sell pressure needed (${validPlatforms.length} platforms)</div><div class="platform-depths">`;
+            enabled.forEach(p => { const hasData = validPlatforms.includes(p); html += `<div class="platform-row ${hasData ? '' : 'no-data'}"><span class="platform-name">${platformMeta[p].emoji} ${platformMeta[p].name}</span><span class="platform-value">${hasData ? '$'+formatLargeNumber(downDepths[p]||0) : 'No data'}</span></div>`; });
+            html += `</div></div><div class="depth-card buy"><h3>📈 Depth to Push UP</h3><div class="current-price">Current: $${currentPrice.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div><div class="target-price">→ ${upLabel}</div><div class="depth-value">$${formatLargeNumber(avgUp)}</div><div class="depth-label">Average buy pressure needed (${validPlatforms.length} platforms)</div><div class="platform-depths">`;
+            enabled.forEach(p => { const hasData = validPlatforms.includes(p); html += `<div class="platform-row ${hasData ? '' : 'no-data'}"><span class="platform-name">${platformMeta[p].emoji} ${platformMeta[p].name}</span><span class="platform-value">${hasData ? '$'+formatLargeNumber(upDepths[p]||0) : 'No data'}</span></div>`; });
+            html += `</div></div>`;
+            document.getElementById('depthCards').innerHTML = html;
+            document.getElementById('depthAnalysis').style.display = 'block';
+        }
+        
+        function formatLargeNumber(num) {
+            if (num >= 1000000000) return (num / 1000000000).toFixed(2) + 'B';
+            if (num >= 1000000) return (num / 1000000).toFixed(2) + 'M';
+            if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+            return num.toFixed(0);
+        }
+        
+        function initDepthModeButtons() {
+            document.querySelectorAll('.depth-mode-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    document.querySelectorAll('.depth-mode-btn').forEach(b => b.classList.remove('active'));
+                    this.classList.add('active');
+                    currentDepthMode = this.dataset.mode;
+                    if (latestOrderbooks) displayDepthAnalysis(latestOrderbooks, document.getElementById('asset').value);
+                });
+            });
+        }
+        
+        function initPlatformToggles() {
+            document.querySelectorAll('.platform-toggle').forEach(toggle => {
+                toggle.addEventListener('click', function() {
+                    const checkbox = this.querySelector('input[type="checkbox"]'), platform = checkbox.dataset.platform;
+                    checkbox.checked = !checkbox.checked;
+                    platformFilters[platform] = checkbox.checked;
+                    this.classList.toggle('active', checkbox.checked);
+                    renderWinCounter();
+                    if (latestData && latestOrderbooks) {
+                        const asset = document.getElementById('asset').value;
+                        renderResults(latestOrderbooks, asset, parseFloat(document.getElementById('tradeSize').value), document.getElementById('side').value, false);
+                        displayDepthAnalysis(latestOrderbooks, asset);
+                    }
+                });
+            });
+            document.getElementById('selectAllBtn').addEventListener('click', function() {
+                Object.keys(platformFilters).forEach(p => { platformFilters[p] = true; document.getElementById('toggle-'+p).classList.add('active'); document.getElementById('toggle-'+p).querySelector('input').checked = true; });
+                renderWinCounter();
+                if (latestData && latestOrderbooks) { const asset = document.getElementById('asset').value; renderResults(latestOrderbooks, asset, parseFloat(document.getElementById('tradeSize').value), document.getElementById('side').value, false); displayDepthAnalysis(latestOrderbooks, asset); }
+            });
+            document.getElementById('clearAllBtn').addEventListener('click', function() {
+                Object.keys(platformFilters).forEach(p => { platformFilters[p] = false; document.getElementById('toggle-'+p).classList.remove('active'); document.getElementById('toggle-'+p).querySelector('input').checked = false; });
+                renderWinCounter();
+                if (latestData && latestOrderbooks) { const asset = document.getElementById('asset').value; renderResults(latestOrderbooks, asset, parseFloat(document.getElementById('tradeSize').value), document.getElementById('side').value, false); displayDepthAnalysis(latestOrderbooks, asset); }
+            });
+        }
+        
+        async function fetchOrderbookData(asset) {
+            const response = await fetch(BACKEND_URL + '/api/orderbook', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ asset }) });
+            if (!response.ok) throw new Error('Backend returned ' + response.status);
+            const data = await response.json();
+            if (!data.success) throw new Error(data.error || 'Failed to fetch data');
+            return { hyperliquid: data.hyperliquid, lighter: data.lighter, aster: data.aster, binance: data.binance };
+        }
+        
+        function calculateSlippage(orderbook, tradeSize, side) {
+            if (!orderbook?.bids?.length || !orderbook?.asks?.length) return { slippage: 0, avgPrice: 0, midPrice: 0, filled: 0, depthLevels: 0, valid: false };
+            const bestBid = orderbook.bids[0].price, bestAsk = orderbook.asks[0].price;
+            if (bestAsk <= 0 || bestBid <= 0 || bestAsk <= bestBid) return { slippage: 0, avgPrice: 0, midPrice: 0, filled: 0, depthLevels: 0, valid: false };
+            const midPrice = (bestBid + bestAsk) / 2, levels = side === 'buy' ? orderbook.asks : orderbook.bids;
+            let remainingUsd = tradeSize, totalCost = 0, totalFilled = 0, levelsUsed = 0;
+            for (const level of levels) {
+                if (remainingUsd <= 0 || !level?.price || !level?.size || level.price <= 0 || level.size <= 0) continue;
+                const canFillUsd = Math.min(remainingUsd, level.price * level.size);
+                totalCost += canFillUsd; totalFilled += canFillUsd / level.price; remainingUsd -= canFillUsd; levelsUsed++;
+            }
+            if (totalFilled === 0) return { slippage: 0, avgPrice: midPrice, midPrice, filled: 0, depthLevels: levelsUsed, valid: false };
+            return { slippage: Math.abs((totalCost/totalFilled - midPrice) / midPrice * 100), avgPrice: totalCost/totalFilled, midPrice, filled: totalFilled, depthLevels: levelsUsed, valid: true };
+        }
+        
+        async function fetchData() {
+            const asset = document.getElementById('asset').value, tradeSize = parseFloat(document.getElementById('tradeSize').value), side = document.getElementById('side').value;
+            if (!autoRefreshInterval) showStatus('loading', '🔄 Fetching...');
+            document.getElementById('fetchBtn').disabled = true;
+            try {
+                const orderbooks = await fetchOrderbookData(asset);
+                latestOrderbooks = orderbooks;
+                renderResults(orderbooks, asset, tradeSize, side, true);
+                displayDepthAnalysis(orderbooks, asset);
+                document.getElementById('lastUpdate').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
+                document.getElementById('lastUpdate').style.display = 'block';
+                if (!autoRefreshInterval) showStatus('success', '✓ Data fetched!');
+                else document.getElementById('status').style.display = 'none';
+            } catch (error) { 
+                showStatus('error', '✗ Error: ' + error.message);
+                if (autoRefreshInterval) setTimeout(() => { if (autoRefreshInterval) document.getElementById('status').style.display = 'none'; }, 2000);
+            } 
+            finally { document.getElementById('fetchBtn').disabled = false; }
+        }
+        
+        function renderResults(orderbooks, asset, tradeSize, side, countWin = true) {
+            const enabled = getEnabledPlatforms();
+            if (!enabled.length) { document.getElementById('results').style.display = 'none'; document.getElementById('charts').style.display = 'none'; return; }
+            const results = {}, invalidPlatforms = [];
+            ['hyperliquid', 'lighter', 'aster', 'binance'].forEach(p => {
+                const s = calculateSlippage(orderbooks[p], tradeSize, side);
+                results[p] = { platform: platformMeta[p].name, avgExecutionPrice: s.avgPrice, midPrice: s.midPrice, slippagePct: s.slippage, totalFilled: s.filled, depthLevels: s.depthLevels, valid: s.valid };
+                if (!s.valid && platformFilters[p]) invalidPlatforms.push(p);
+            });
+            latestData = results;
+            const validPlatforms = getValidPlatforms(results);
+            const winner = findWinner(results);
+            if (invalidPlatforms.length > 0 && countWin) {
+                const names = invalidPlatforms.map(p => platformMeta[p].name).join(', ');
+                showStatus('warning', `⚠️ No data from: ${names}`);
+                setTimeout(() => { if (autoRefreshInterval) document.getElementById('status').style.display = 'none'; }, 3000);
+            }
+            if (countWin) updateWinCounter(winner, invalidPlatforms);
+            displayResults(results, asset, tradeSize, side, winner, validPlatforms);
+            storeHistoricalData(results, asset, tradeSize, side, winner);
+        }
+        
+        function displayResults(results, asset, tradeSize, side, winner, validPlatforms) {
+            const enabled = getEnabledPlatforms();
+            let html = '';
+            ['hyperliquid', 'lighter', 'aster', 'binance'].forEach(p => {
+                const d = results[p] || {}, m = platformMeta[p], isOn = platformFilters[p], isWin = p === winner;
+                const hasData = d.valid;
+                const fee = getFee(p);
+                const totalCost = hasData ? d.slippagePct + fee : 0;
+                const cardClass = !isOn ? 'disabled' : (!hasData ? 'no-data' : (isWin ? 'winner' : ''));
+                
+                html += `<div class="platform-card ${cardClass}"><h2>${m.emoji} ${m.name}${isWin && hasData ? ' 🏆' : ''}${!isOn ? ' (excluded)' : ''}${isOn && !hasData ? ' ⚠️' : ''}</h2>`;
+                
+                if (hasData) {
+                    html += `<div class="metric"><span class="metric-label">Mid Price:</span><span class="metric-value">$${(d.midPrice||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>`;
+                    html += `<div class="metric"><span class="metric-label">Avg Execution:</span><span class="metric-value">$${(d.avgExecutionPrice||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>`;
+                    
+                    // Slippage display with optional fee
+                    if (currentFeeMode === 'none') {
+                        html += `<div class="metric"><span class="metric-label">Slippage:</span><span class="metric-value ${isWin?'better':''}">${d.slippagePct.toFixed(4)}%</span></div>`;
+                    } else {
+                        const feeLabel = currentFeeMode === 'retail' ? 'Retail Fee' : 'MM Fee';
+                        html += `<div class="metric"><span class="metric-label">Slippage:</span><span class="metric-value"><span class="slippage">${d.slippagePct.toFixed(4)}%</span></span></div>`;
+                        html += `<div class="metric"><span class="metric-label">${feeLabel}:</span><span class="metric-value"><span class="fee">+${fee.toFixed(3)}%</span></span></div>`;
+                        html += `<div class="metric"><span class="metric-label">Total Cost:</span><span class="metric-value ${isWin?'better':''}"><span class="total">${totalCost.toFixed(4)}%</span></span></div>`;
+                    }
+                    
+                    html += `<div class="metric"><span class="metric-label">Size Filled:</span><span class="metric-value">${(d.totalFilled||0).toFixed(6)} ${asset}</span></div>`;
+                    html += `<div class="metric"><span class="metric-label">Depth Levels:</span><span class="metric-value">${d.depthLevels||0}</span></div>`;
+                } else {
+                    html += `<div class="metric"><span class="metric-label">Status:</span><span class="metric-value no-data">No Data Available</span></div>`;
+                    html += `<div class="metric"><span class="metric-label">Reason:</span><span class="metric-value no-data">WebSocket/API issue</span></div>`;
+                }
+                html += '</div>';
+            });
+            
+            // Summary card
+            const validTotals = validPlatforms.map(p => getTotalCost(results[p]?.slippagePct || 0, p));
+            const best = validTotals.length > 0 ? Math.min(...validTotals) : 0;
+            const worst = validTotals.length > 0 ? Math.max(...validTotals) : 0;
+            const costLabel = currentFeeMode === 'none' ? 'Slippage' : 'Total Cost';
+            
+            html += `<div class="platform-card" style="background:linear-gradient(135deg,#ffeaa7 0%,#fdcb6e 100%);"><h2>📊 Summary (${validPlatforms.length}/${enabled.length} valid)</h2>`;
+            html += `<div class="metric"><span class="metric-label">Winner:</span><span class="metric-value">${winner ? platformMeta[winner].name+' '+platformMeta[winner].emoji : 'N/A'}</span></div>`;
+            html += `<div class="metric"><span class="metric-label">Best ${costLabel}:</span><span class="metric-value">${best.toFixed(4)}%</span></div>`;
+            html += `<div class="metric"><span class="metric-label">Worst ${costLabel}:</span><span class="metric-value">${worst.toFixed(4)}%</span></div>`;
+            html += `<div class="metric"><span class="metric-label">Range:</span><span class="metric-value">${(worst-best).toFixed(4)}%</span></div>`;
+            if (currentFeeMode !== 'none') {
+                html += `<div class="metric"><span class="metric-label">Fee Mode:</span><span class="metric-value">${currentFeeMode === 'retail' ? '🏪 Retail' : '🏦 MM'}</span></div>`;
+            }
+            html += '</div>';
+            
+            document.getElementById('results').innerHTML = html;
+            document.getElementById('results').style.display = 'grid';
+            document.getElementById('charts').style.display = 'grid';
+            document.getElementById('exportSection').style.display = 'block';
+            updateCharts(results, validPlatforms); 
+            updateDataTable(results, asset, tradeSize, side, validPlatforms); 
+            updateTimeSeriesChart();
+        }
+        
+        function updateTimeSeriesChart() {
+            const ctx = document.getElementById('timeSeriesChart').getContext('2d');
+            if (timeSeriesChart) timeSeriesChart.destroy();
+            const dataPoints = Math.min(chartTimeframePoints, historicalData.length);
+            const data = [...historicalData].slice(0, dataPoints).reverse();
+            const enabled = getEnabledPlatforms();
+            const labels = data.map(r => new Date(r.timestamp).toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', second:'2-digit' }));
+            const datasets = enabled.map(p => ({ label: platformMeta[p].name, data: data.map(r => (r[p]?.valid ? getTotalCost(r[p].slippagePct, p) : null)), borderColor: platformMeta[p].borderColor, backgroundColor: platformMeta[p].color.replace('0.7','0.1'), borderWidth: 2, tension: 0.4, fill: false, pointRadius: dataPoints > 100 ? 0 : 2, spanGaps: false }));
+            const chartTitle = currentFeeMode === 'none' ? 'Slippage %' : `Total Cost % (Slippage + ${currentFeeMode === 'retail' ? 'Retail' : 'MM'} Fee)`;
+            timeSeriesChart = new Chart(ctx, { type: 'line', data: { labels, datasets }, options: { responsive: true, maintainAspectRatio: true, animation: { duration: 0 }, interaction: { mode: 'index', intersect: false }, plugins: { legend: { display: true, position: 'top' }, title: { display: true, text: `Showing last ${dataPoints} points | ${chartTitle}`, font: { size: 11 }, color: '#999' } }, scales: { y: { beginAtZero: true, ticks: { callback: v => v.toFixed(4)+'%' }, title: { display: true, text: chartTitle } }, x: { ticks: { maxTicksLimit: 10, maxRotation: 45, minRotation: 0 } } } } });
+        }
+        
+        function updateCharts(results, validPlatforms) {
+            const labels = validPlatforms.map(p => platformMeta[p].name);
+            const slipData = validPlatforms.map(p => getTotalCost(results[p]?.slippagePct || 0, p));
+            const depthData = validPlatforms.map(p => results[p]?.depthLevels || 0);
+            const bgColors = validPlatforms.map(p => platformMeta[p].color), borderColors = validPlatforms.map(p => platformMeta[p].borderColor);
+            const slipCtx = document.getElementById('slippageChart').getContext('2d');
+            if (slippageChart) slippageChart.destroy();
+            const chartLabel = currentFeeMode === 'none' ? 'Slippage (%)' : 'Total Cost (%)';
+            slippageChart = new Chart(slipCtx, { type: 'bar', data: { labels, datasets: [{ label: chartLabel, data: slipData, backgroundColor: bgColors, borderColor: borderColors, borderWidth: 2 }] }, options: { responsive: true, maintainAspectRatio: true, animation: { duration: 0 }, scales: { y: { beginAtZero: true, ticks: { callback: v => v.toFixed(4)+'%' } } }, plugins: { legend: { display: false } } } });
+            const depthCtx = document.getElementById('depthChart').getContext('2d');
+            if (depthChart) depthChart.destroy();
+            depthChart = new Chart(depthCtx, { type: 'bar', data: { labels, datasets: [{ label: 'Depth (levels)', data: depthData, backgroundColor: bgColors, borderColor: borderColors, borderWidth: 2 }] }, options: { responsive: true, maintainAspectRatio: true, animation: { duration: 0 }, scales: { y: { beginAtZero: true } }, plugins: { legend: { display: false } } } });
+        }
+        
+        function updateDataTable(results, asset, tradeSize, side, validPlatforms) {
+            const enabled = getEnabledPlatforms();
+            const totals = validPlatforms.map(p => getTotalCost(results[p]?.slippagePct || 0, p));
+            const minTotal = totals.length > 0 ? Math.min(...totals) : 0;
+            let hdr = '<th>Metric</th>' + enabled.map(p => '<th>'+platformMeta[p].name + (results[p]?.valid ? '' : ' ⚠️') + '</th>').join('');
+            let html = '<thead><tr>'+hdr+'</tr></thead><tbody>';
+            html += '<tr><td><strong>Asset</strong></td><td colspan="'+enabled.length+'">'+asset+' | $'+tradeSize.toLocaleString()+' | '+side+'</td></tr>';
+            html += '<tr><td><strong>Mid Price</strong></td>'+enabled.map(p => `<td class="${results[p]?.valid ? '' : 'worse'}">${results[p]?.valid ? '$'+(results[p]?.midPrice||0).toFixed(2) : 'No data'}</td>`).join('')+'</tr>';
+            html += '<tr><td><strong>Slippage %</strong></td>'+enabled.map(p => `<td>${results[p]?.valid ? (results[p]?.slippagePct||0).toFixed(4)+'%' : '-'}</td>`).join('')+'</tr>';
+            if (currentFeeMode !== 'none') {
+                const feeLabel = currentFeeMode === 'retail' ? 'Retail Fee' : 'MM Fee';
+                html += '<tr><td><strong>'+feeLabel+'</strong></td>'+enabled.map(p => `<td>${results[p]?.valid ? getFee(p).toFixed(3)+'%' : '-'}</td>`).join('')+'</tr>';
+                html += '<tr><td><strong>Total Cost</strong></td>'+enabled.map(p => { 
+                    if (!results[p]?.valid) return '<td>-</td>';
+                    const total = getTotalCost(results[p].slippagePct, p);
+                    return '<td class="'+(total===minTotal?'better':'')+'">'+(total).toFixed(4)+'%</td>'; 
+                }).join('')+'</tr>';
+            }
+            html += '</tbody>';
+            document.getElementById('dataTable').innerHTML = html;
+        }
+        
+        function storeHistoricalData(results, asset, tradeSize, side, winner) {
+            historicalData.unshift({ timestamp: new Date().toISOString(), asset, tradeSize, side, winner, hyperliquid: results.hyperliquid, lighter: results.lighter, aster: results.aster, binance: results.binance });
+            if (historicalData.length > 1000) historicalData.pop();
+        }
+        
+        function showStatus(type, message) {
+            const s = document.getElementById('status');
+            s.className = 'status ' + type; s.textContent = message; s.style.display = 'block';
+            if (type === 'success') setTimeout(() => s.style.display = 'none', 2000);
+        }
+        
+        function copyForSheets() {
+            const enabled = getEnabledPlatforms();
+            let tsv = ['Timestamp','Asset','Trade Size','Side','Platform','Mid Price','Slippage %','Fee %','Total Cost %','Valid'].join('\t')+'\n';
+            historicalData.forEach(r => { enabled.forEach(p => { const d = r[p]; if (d) { const fee = getFee(p); tsv += [new Date(r.timestamp).toLocaleString(), r.asset, r.tradeSize, r.side, platformMeta[p].name, (d.midPrice||0).toFixed(2), (d.slippagePct||0).toFixed(4), fee.toFixed(3), (d.slippagePct+fee).toFixed(4), d.valid?'Yes':'No'].join('\t')+'\n'; } }); });
+            navigator.clipboard.writeText(tsv).then(() => showStatus('success', '✓ Copied!')).catch(e => showStatus('error', '✗ Failed: '+e.message));
+        }
+        
+        function downloadCSV() {
+            const enabled = getEnabledPlatforms();
+            let csv = 'Timestamp,Asset,Trade Size,Side,Platform,Mid Price,Slippage %,Fee %,Total Cost %,Valid\n';
+            historicalData.forEach(r => { enabled.forEach(p => { const d = r[p]; if (d) { const fee = getFee(p); csv += [new Date(r.timestamp).toLocaleString(), r.asset, r.tradeSize, r.side, platformMeta[p].name, d.midPrice||0, d.slippagePct||0, fee, d.slippagePct+fee, d.valid?'Yes':'No'].join(',')+'\n'; } }); });
+            const blob = new Blob([csv], { type: 'text/csv' }), url = window.URL.createObjectURL(blob), a = document.createElement('a');
+            a.href = url; a.download = 'orderbook-data-'+new Date().toISOString().split('T')[0]+'.csv'; a.click(); window.URL.revokeObjectURL(url);
+            showStatus('success', '✓ CSV downloaded!');
+        }
+        
+        function showHistoricalData() {
+            if (!historicalData.length) { showStatus('error', 'No data yet!'); return; }
+            const enabled = getEnabledPlatforms();
+            let hdr = '<th>Time</th><th>Asset</th>' + enabled.map(p => '<th>'+platformMeta[p].emoji+'</th>').join('') + '<th>Winner</th>';
+            let html = '<thead><tr>'+hdr+'</tr></thead><tbody>';
+            historicalData.slice(0, 100).forEach(r => {
+                html += '<tr><td>'+new Date(r.timestamp).toLocaleTimeString()+'</td><td>'+r.asset+'</td>';
+                html += enabled.map(p => {
+                    const valid = r[p]?.valid, isWinner = r.winner === p;
+                    if (!valid) return '<td class="worse">-</td>';
+                    const total = getTotalCost(r[p]?.slippagePct || 0, p);
+                    return `<td class="${isWinner ? 'better' : ''}">${total.toFixed(4)}%</td>`;
+                }).join('');
+                html += `<td>${r.winner ? platformMeta[r.winner]?.emoji : '-'}</td></tr>`;
+            });
+            html += '</tbody>';
+            document.getElementById('dataTable').innerHTML = html;
+            showStatus('success', 'Showing '+Math.min(historicalData.length, 100)+' records');
+        }
+        
+        document.addEventListener('DOMContentLoaded', function() {
+            initPlatformToggles();
+            initDepthModeButtons();
+            initRefreshButtons();
+            initTimeframeButtons();
+            initFeeButtons();
+            document.getElementById('fetchBtn').addEventListener('click', fetchData);
+            document.getElementById('copyBtn').addEventListener('click', copyForSheets);
+            document.getElementById('downloadBtn').addEventListener('click', downloadCSV);
+            document.getElementById('historyBtn').addEventListener('click', showHistoricalData);
+            document.getElementById('resetWinsBtn').addEventListener('click', resetWinCounts);
+            document.getElementById('asset').addEventListener('change', () => { if (autoRefreshInterval) fetchData(); });
+            renderWinCounter();
+        });
+    </script>
+</body>
+</html>
