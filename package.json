@@ -1,19 +1,32 @@
 {
-  "name": "orderbook-analyzer",
+  "name": "orderbook-api",
   "version": "1.0.0",
-  "description": "Multi-exchange orderbook depth and slippage analyzer",
+  "description": "Orderbook API server with Hyperliquid, Lighter, and Aster exchanges",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "nodemon server.js"
+  },
+  "engines": {
+    "node": ">=14.0.0",
+    "npm": ">=6.0.0"
   },
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
-    "node-fetch": "^2.7.0",
-    "ws": "^8.14.2"
+    "node-fetch": "^2.7.0"
   },
-  "engines": {
-    "node": ">=18.0.0"
-  }
+  "devDependencies": {
+    "nodemon": "^2.0.20"
+  },
+  "keywords": [
+    "orderbook",
+    "crypto",
+    "api",
+    "hyperliquid",
+    "lighter",
+    "aster"
+  ],
+  "author": "",
+  "license": "ISC"
 }
